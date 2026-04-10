@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Daily Expense Tracker</title>
+    <title>Expense Tracker (GitHub Backed)</title>
     <style>
         * {
             margin: 0;
@@ -158,6 +158,39 @@
             font-style: italic;
         }
         
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            margin-top: 1rem;
+            padding: 0.5rem;
+            border-radius: 4px;
+        }
+        
+        .status-online {
+            background-color: #d5f4e6;
+            color: #27ae60;
+        }
+        
+        .status-offline {
+            background-color: #fadbd8;
+            color: #e74c3c;
+        }
+        
+        .status-connecting {
+            background-color: #fdebd0;
+            color: #f39c12;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        
         @media (max-width: 480px) {
             .container {
                 margin: 1rem auto;
@@ -177,7 +210,11 @@
 </head>
 <body>
     <div class="container">
-        <h1>Daily Expense Tracker</h1>
+        <h1>Expense Tracker</h1>
+        <div class="status-indicator" id="statusIndicator">
+            <div class="status-dot" id="statusDot"></div>
+            <span id="statusText">Connecting...</span>
+        </div>
         
         <form class="expense-form" id="expenseForm">
             <div class="form-group">
@@ -211,64 +248,149 @@
     </div>
 
     <script>
-        // Expense Tracker Logic
-        class ExpenseTracker {
+        // GitHub-Backed Expense Tracker
+        class GitHubExpenseTracker {
             constructor() {
-                this.expenses = JSON.parse(localStorage.getItem('expenses')) || [];
+                this.expenses = [];
+                this.apiBase = ''; // Relative to current origin (same domain)
                 this.init();
             }
             
-            init() {
+            async init() {
                 this.expenseForm = document.getElementById('expenseForm');
                 this.expensesList = document.getElementById('expensesList');
                 this.totalAmount = document.getElementById('totalAmount');
+                this.statusIndicator = document.getElementById('statusIndicator');
+                this.statusDot = document.getElementById('statusDot');
+                this.statusText = document.getElementById('statusText');
                 
                 this.expenseForm.addEventListener('submit', (e) => this.addExpense(e));
-                this.render();
+                
+                // Initial load
+                await this.loadExpenses();
+                
+                // Set up periodic refresh (every 30 seconds) to catch changes from other devices
+                setInterval(() => this.loadExpenses(), 30000);
             }
             
-            addExpense(e) {
+            async updateStatus(isOnline, message = '') {
+                if (isOnline) {
+                    this.statusIndicator.className = 'status-indicator status-online';
+                    this.statusDot.className = 'status-dot';
+                    this.statusText.textContent = message || 'Connected';
+                } else {
+                    this.statusIndicator.className = 'status-indicator status-offline';
+                    this.statusDot.className = 'status-dot';
+                    this.statusText.textContent = message || 'Offline';
+                }
+            }
+            
+            async loadExpenses() {
+                try {
+                    await this.updateStatus(false, 'Loading...');
+                    const response = await fetch(`${this.apiBase}/api/expenses`);
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    this.expenses = await response.json();
+                    await this.updateStatus(true, 'Connected');
+                    this.render();
+                } catch (error) {
+                    console.error('Failed to load expenses:', error);
+                    await this.updateStatus(false, 'Connection failed');
+                    // Show empty state but keep UI functional
+                    this.expenses = [];
+                    this.render();
+                }
+            }
+            
+            async addExpense(e) {
                 e.preventDefault();
                 
                 const description = document.getElementById('description').value.trim();
                 const amount = parseFloat(document.getElementById('amount').value);
                 const date = document.getElementById('date').value;
                 
-                if (!description || isNaN(amount) || amount <= 0 || !date) {
-                    alert('Please fill in all fields correctly');
+                // Validation
+                if (!description) {
+                    alert('Please enter a description');
                     return;
                 }
                 
-                const expense = {
-                    id: Date.now(),
-                    description,
-                    amount,
-                    date: new Date(date).toLocaleDateString()
-                };
+                if (isNaN(amount) || amount <= 0) {
+                    alert('Please enter a valid amount greater than 0');
+                    return;
+                }
                 
-                this.expenses.push(expense);
-                this.saveExpenses();
-                this.render();
-                this.expenseForm.reset();
+                if (!date) {
+                    alert('Please select a date');
+                    return;
+                }
                 
-                // Set date to today for next entry
-                document.getElementById('date').valueAsDate = new Date();
+                try {
+                    await this.updateStatus(false, 'Saving...');
+                    
+                    const expenseData = {
+                        description: description,
+                        amount: amount,
+                        date: date
+                    };
+                    
+                    const response = await fetch(`${this.apiBase}/api/expenses`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(expenseData)
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || `HTTP ${response.status}`);
+                    }
+                    
+                    const newExpense = await response.json();
+                    await this.loadExpenses(); // Refresh from server to get the ID and any server-side modifications
+                    
+                    // Reset form
+                    this.expenseForm.reset();
+                    document.getElementById('date').valueAsDate = new Date();
+                    
+                } catch (error) {
+                    console.error('Failed to add expense:', error);
+                    await this.updateStatus(false, 'Save failed');
+                    alert('Failed to save expense: ' + error.message);
+                }
             }
             
-            deleteExpense(id) {
-                if (confirm('Are you sure you want to delete this expense?')) {
-                    this.expenses = this.expenses.filter(expense => expense.id !== id);
-                    this.saveExpenses();
-                    this.render();
+            async deleteExpense(id) {
+                if (!confirm('Are you sure you want to delete this expense?')) {
+                    return;
+                }
+                
+                try {
+                    await this.updateStatus(false, 'Deleting...');
+                    
+                    const response = await fetch(`${this.apiBase}/api/expenses/${id}`, {
+                        method: 'DELETE'
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || `HTTP ${response.status}`);
+                    }
+                    
+                    await this.loadExpenses(); // Refresh from server
+                    
+                } catch (error) {
+                    console.error('Failed to delete expense:', error);
+                    await this.updateStatus(false, 'Delete failed');
+                    alert('Failed to delete expense: ' + error.message);
                 }
             }
             
             calculateTotal() {
                 return this.expenses.reduce((sum, expense) => sum + expense.amount, 0);
-            }
-            
-            saveExpenses() {
-                localStorage.setItem('expenses', JSON.stringify(this.expenses));
             }
             
             render() {
@@ -296,7 +418,7 @@
         
         // Initialize the app when DOM is loaded
         document.addEventListener('DOMContentLoaded', () => {
-            window.expenseTracker = new ExpenseTracker();
+            window.expenseTracker = new GitHubExpenseTracker();
         });
     </script>
 </body>
